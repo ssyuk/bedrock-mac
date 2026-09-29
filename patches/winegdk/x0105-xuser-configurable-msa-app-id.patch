@@ -1,0 +1,60 @@
+diff --git a/dlls/xgameruntime/GDKComponent/System/User/XUser.c b/dlls/xgameruntime/GDKComponent/System/User/XUser.c
+index a6d1943..9365995 100644
+--- a/dlls/xgameruntime/GDKComponent/System/User/XUser.c
++++ b/dlls/xgameruntime/GDKComponent/System/User/XUser.c
+@@ -182,6 +182,28 @@ static struct x_user *signed_in_user_snapshot( void )
+         (void *volatile *)&g_signed_in_user, NULL, NULL );
+ }
+ 
++/* MSA client id the refresh token was issued to. Defaults to Minecraft
++ * Bedrock's; other titles (e.g. Minecraft Dungeons II, 00000000497C1B94)
++ * set HKLM\Software\Wine\WineGDK "MsaAppId" to their MicrosoftGame.Config
++ * MSAAppId so OAuth refresh and SISU are bound to the right title. */
++static LPCSTR GetMsaAppId( void )
++{
++    static char app_id[64];
++    static LONG loaded;
++    DWORD size = sizeof(app_id);
++
++    if (!InterlockedCompareExchange( &loaded, 1, 0 ))
++    {
++        if (ERROR_SUCCESS != RegGetValueA( HKEY_LOCAL_MACHINE, "Software\\Wine\\WineGDK", "MsaAppId",
++                                           RRF_RT_REG_SZ, NULL, app_id, &size ) || !app_id[0])
++            lstrcpynA( app_id, "0000000048183522", sizeof(app_id) );
++        TRACE( "using MSA app id %s\n", app_id );
++        InterlockedExchange( &loaded, 2 );
++    }
++    while (InterlockedCompareExchange( &loaded, 2, 2 ) != 2) YieldProcessor();
++    return app_id;
++}
++
+ static HRESULT LoadDefaultUser( XUserHandle *user, LPCSTR client_id )
+ {
+     struct x_user *impl;
+@@ -688,7 +710,7 @@ static HRESULT WINAPI x_user_XUserAddAsync( IXUserImpl *iface, XUserAddOptions o
+     }
+ 
+     context->options = options;
+-    context->client_id = "0000000048183522"; /* MSAAppId matching ProxyPass refresh token */
++    context->client_id = GetMsaAppId(); /* MSAAppId the refresh token was issued to */
+     hr = impl->lpVtbl->XAsyncBegin( impl, asyncBlock, context, x_user_XUserAddAsync, "XUserAddAsync", XUserAddProvider );
+     impl->lpVtbl->Release( impl );
+     return hr;
+@@ -1366,7 +1388,7 @@ static HRESULT CALLBACK XUserGetTokenAndSignatureProvider( XAsyncOp operation, c
+                         if (SUCCEEDED( HSTRINGToMultiByte( user_impl->refresh_token, &rt, &rtl ) ) && rt)
+                         {
+                             HSTRING n_oauth = NULL, n_refresh = NULL; time_t n_exp = 0;
+-                            if (SUCCEEDED( RefreshOAuth( "0000000048183522", rt, &n_exp, &n_refresh, &n_oauth ) ))
++                            if (SUCCEEDED( RefreshOAuth( GetMsaAppId(), rt, &n_exp, &n_refresh, &n_oauth ) ))
+                             {
+                                 if (user_impl->oauth_token) WindowsDeleteString( user_impl->oauth_token );
+                                 user_impl->oauth_token = n_oauth;
+@@ -1388,7 +1410,7 @@ static HRESULT CALLBACK XUserGetTokenAndSignatureProvider( XAsyncOp operation, c
+                          * 0000000048183522, not an audience swap. */
+                         UINT64 sisu_uhs = 0;
+                         dowork_hr = RequestSisuAuthorize(
+-                            "0000000048183522",
++                            GetMsaAppId(),
+                             user_impl->oauth_token, device_token, rp,
+                             &xsts_token, &sisu_uhs );
+                         WindowsDeleteString( device_token );
