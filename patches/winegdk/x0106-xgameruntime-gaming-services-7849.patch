@@ -1,0 +1,37 @@
+diff --git a/dlls/xgameruntime/GDKComponent/InitInternalGDKC.c b/dlls/xgameruntime/GDKComponent/InitInternalGDKC.c
+index 9b4f1de..f349d38 100644
+--- a/dlls/xgameruntime/GDKComponent/InitInternalGDKC.c
++++ b/dlls/xgameruntime/GDKComponent/InitInternalGDKC.c
+@@ -26,8 +26,8 @@ WINE_DEFAULT_DEBUG_CHANNEL(gdkc);
+ static BOOLEAN WINAPI GDKCIgnoreVersionMismatch( void )
+ {
+     LSTATUS result;
+-    DWORD valueSize;
+-    INT32 value;
++    DWORD valueSize = sizeof(INT32);
++    INT32 value = 0;
+ 
+     result = RegGetValueW( HKEY_LOCAL_MACHINE,
+                            L"Software\\Microsoft\\GamingServices",
+@@ -37,7 +37,7 @@ static BOOLEAN WINAPI GDKCIgnoreVersionMismatch( void )
+                            &value,
+                            &valueSize );
+     
+-    if ( FAILED( result ) ) return FALSE;
++    if ( result != ERROR_SUCCESS ) return FALSE;
+     if ( value == 0 )
+         return FALSE;
+     else
+diff --git a/dlls/xgameruntime/private.h b/dlls/xgameruntime/private.h
+index 65fdc19..affbf29 100644
+--- a/dlls/xgameruntime/private.h
++++ b/dlls/xgameruntime/private.h
+@@ -49,7 +49,7 @@
+ 
+ // October 2025 Release of GDK
+ #define GDKC_VERSION 10002L
+-#define GAMING_SERVICES_VERSION 6247L
++#define GAMING_SERVICES_VERSION 7849L /* Minecraft Dungeons II asks for 7839 */
+ 
+ extern IXSystemImpl *x_system_impl;
+ extern IXGameImpl *x_game_impl;
