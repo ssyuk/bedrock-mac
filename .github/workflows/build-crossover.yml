@@ -1,0 +1,196 @@
+name: build-crossover
+
+on:
+  workflow_dispatch:
+    inputs:
+      cx_version:
+        description: "CrossOver source version (media.codeweavers.com)"
+        required: false
+        default: "26.3.0"
+      cx_sha256:
+        description: "SHA-256 of crossover-sources-<version>.tar.gz"
+        required: false
+        default: "ac99c8ca4b3848f3e81784135f023df266b61c2345726ea55a50b3e030dd6872"
+      dxmt_tag:
+        description: "3Shain/dxmt release tag"
+        required: false
+        default: "v0.80"
+  push:
+    branches: [dungeons2]
+    paths:
+      - ".github/workflows/build-crossover.yml"
+
+permissions:
+  contents: read
+
+env:
+  CX_VERSION: ${{ inputs.cx_version || '26.3.0' }}
+  CX_SHA256: ${{ inputs.cx_sha256 || 'ac99c8ca4b3848f3e81784135f023df266b61c2345726ea55a50b3e030dd6872' }}
+  DXMT_TAG: ${{ inputs.dxmt_tag || 'v0.80' }}
+  LLVM_MINGW: llvm-mingw-20260908-ucrt-macos-universal
+  PORTS: /opt/local
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 3G
+  SRC: ${{ github.workspace }}/src
+  STAGE: ${{ github.workspace }}/stage
+  DIST: ${{ github.workspace }}/dist
+
+jobs:
+  build:
+    # Wine for macOS is x86_64 (runs via Rosetta on Apple Silicon). Homebrew no
+    # longer supports Intel, so the build runs natively on an Intel runner with
+    # MacPorts for the host libraries and llvm-mingw for the PE side.
+    runs-on: macos-15-intel
+    timeout-minutes: 300
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Runner info
+        run: |
+          set -euxo pipefail
+          uname -a; sw_vers; sysctl -n hw.ncpu; xcodebuild -version
+
+      - name: Install MacPorts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          cd "$RUNNER_TEMP"
+          gh release download -R macports/macports-base -p "MacPorts-*-15-Sequoia.pkg"
+          sudo installer -pkg MacPorts-*-15-Sequoia.pkg -target /
+          echo "$PORTS/bin" >> "$GITHUB_PATH"
+          echo "$PORTS/sbin" >> "$GITHUB_PATH"
+
+      - name: Install host libraries
+        run: |
+          set -euxo pipefail
+          sudo port -N install gnutls freetype bison pkgconfig ccache
+          port installed
+
+      - name: Install llvm-mingw
+        run: |
+          set -euxo pipefail
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o llvm-mingw.tar.xz \
+            "https://github.com/mstorsjo/llvm-mingw/releases/download/20260908/$LLVM_MINGW.tar.xz"
+          tar -xf llvm-mingw.tar.xz
+          echo "$RUNNER_TEMP/$LLVM_MINGW/bin" >> "$GITHUB_PATH"
+
+      - name: Fetch CrossOver sources
+        run: |
+          set -euxo pipefail
+          mkdir -p "$SRC" && cd "$SRC"
+          curl -fsSL -o cx.tar.gz \
+            "https://media.codeweavers.com/pub/crossover/source/crossover-sources-$CX_VERSION.tar.gz"
+          echo "$CX_SHA256  cx.tar.gz" | shasum -a 256 -c
+          tar -xzf cx.tar.gz sources/wine
+          mv sources/wine winegdk
+          cat winegdk/VERSION
+          echo "WINEGDK_SHA=cx-$CX_VERSION" >> "$GITHUB_ENV"
+
+      - name: Restore ccache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-${{ env.WINEGDK_SHA }}-${{ hashFiles('patches/**') }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ env.WINEGDK_SHA }}-
+            ccache-
+
+      - name: Configure CrossOver Wine
+        working-directory: src/winegdk
+        run: |
+          set -euxo pipefail
+          x86_64-w64-mingw32-clang --version
+          export PKG_CONFIG_PATH="$PORTS/lib/pkgconfig"
+          ./configure --prefix="$STAGE" \
+            --enable-archs=x86_64 \
+            CC="ccache /usr/bin/clang" CXX="ccache /usr/bin/clang++" \
+            x86_64_CC="ccache x86_64-w64-mingw32-clang" \
+            x86_64_CXX="ccache x86_64-w64-mingw32-clang++" \
+            --without-x \
+            CFLAGS="-O2 -I$PORTS/include" \
+            LDFLAGS="-L$PORTS/lib" \
+            x86_64_CFLAGS="-O2"
+          grep -E "SONAME_LIB(GNUTLS|FREETYPE)" include/config.h
+
+      - name: Build and install CrossOver Wine
+        working-directory: src/winegdk
+        run: |
+          set -euxo pipefail
+          ccache -z
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+          ccache -s
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-${{ env.WINEGDK_SHA }}-${{ hashFiles('patches/**') }}-${{ github.run_id }}
+
+      - name: Add DXMT (official, attested release)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p "$SRC/dxmt" && cd "$SRC/dxmt"
+          gh release view "$DXMT_TAG" -R 3Shain/dxmt --json assets --jq '.assets[].name'
+          gh release download "$DXMT_TAG" -R 3Shain/dxmt -p "dxmt-*.tar.gz"
+          TARBALL="$(ls dxmt-*.tar.gz | head -n1)"
+          gh attestation verify "$TARBALL" --repo 3Shain/dxmt
+          tar -xzf "$TARBALL"
+          ROOT="$(dirname "$(find . -type d -name x86_64-windows | head -n1)")"
+          ls -R "$ROOT"
+          # keep Wine's own wined3d-based DLLs as a fallback
+          mkdir -p "$STAGE/share/bedrock-mac/wined3d"
+          for f in d3d11.dll dxgi.dll d3d10core.dll d3d12.dll; do
+            [ -f "$STAGE/lib/wine/x86_64-windows/$f" ] && cp "$STAGE/lib/wine/x86_64-windows/$f" "$STAGE/share/bedrock-mac/wined3d/"
+          done
+          cp "$ROOT"/x86_64-windows/*.dll "$STAGE/lib/wine/x86_64-windows/"
+          cp "$ROOT"/x86_64-unix/*.so "$STAGE/lib/wine/x86_64-unix/"
+
+      - name: Bundle host dylibs
+        run: |
+          set -euxo pipefail
+          python3 scripts/bundle_dylibs.py "$STAGE" \
+            "$PORTS"/lib/libgnutls.30.dylib \
+            "$PORTS"/lib/libfreetype.6.dylib
+
+      - name: Write build info
+        run: |
+          set -euxo pipefail
+          cat > "$STAGE/share/bedrock-mac/BUILDINFO" <<INFO
+          wine=crossover-sources-$CX_VERSION.tar.gz sha256=$CX_SHA256
+          dxmt=https://github.com/3Shain/dxmt/releases/tag/$DXMT_TAG
+          workflow=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          commit=${{ github.sha }}
+          INFO
+          cat "$STAGE/share/bedrock-mac/BUILDINFO"
+          file "$STAGE/bin/wine" "$STAGE/lib/wine/x86_64-unix/ntdll.so" "$STAGE/lib/wine/x86_64-unix/winemetal.so"
+          otool -L "$STAGE/lib/wine/x86_64-unix/winemetal.so"
+
+      - name: Package
+        run: |
+          set -euxo pipefail
+          mkdir -p "$DIST"
+          NAME="cx-runtime-$CX_VERSION-dxmt-$DXMT_TAG-x86_64"
+          echo "NAME=$NAME" >> "$GITHUB_ENV"
+          tar -C "$STAGE" -cJf "$DIST/$NAME.tar.xz" .
+          (cd "$DIST" && shasum -a 256 "$NAME.tar.xz" | tee "$NAME.tar.xz.sha256")
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.NAME }}
+          path: dist/
+          if-no-files-found: error
+
+      - name: Upload config.log on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: config-log
+          path: src/winegdk/config.log
+          if-no-files-found: ignore
