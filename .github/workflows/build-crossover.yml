@@ -57,8 +57,10 @@ jobs:
         run: |
           set -euxo pipefail
           cd "$RUNNER_TEMP"
-          gh release download -R macports/macports-base -p "MacPorts-*-15-Sequoia.pkg"
-          sudo installer -pkg MacPorts-*-15-Sequoia.pkg -target /
+          gh release download v2.12.6 -R macports/macports-base -p "MacPorts-2.12.6-15-Sequoia.pkg"
+          echo "2d6d58ff3ff60e70f8dc05cb2df9df3137e3d7c0c6d6f6236d68c8ba03343e34  MacPorts-2.12.6-15-Sequoia.pkg" | shasum -a 256 -c
+          pkgutil --check-signature MacPorts-2.12.6-15-Sequoia.pkg
+          sudo installer -pkg MacPorts-2.12.6-15-Sequoia.pkg -target /
           echo "$PORTS/bin" >> "$GITHUB_PATH"
           echo "$PORTS/sbin" >> "$GITHUB_PATH"
 
@@ -74,6 +76,7 @@ jobs:
           cd "$RUNNER_TEMP"
           curl -fsSL -o llvm-mingw.tar.xz \
             "https://github.com/mstorsjo/llvm-mingw/releases/download/20260908/$LLVM_MINGW.tar.xz"
+          echo "d1dc5d1ecf3a3ced5ed5544c72f1acd0c8e84eb3024d520ecc6b143eec62a149  llvm-mingw.tar.xz" | shasum -a 256 -c
           tar -xf llvm-mingw.tar.xz
           echo "$RUNNER_TEMP/$LLVM_MINGW/bin" >> "$GITHUB_PATH"
 
@@ -96,7 +99,6 @@ jobs:
           key: ccache-${{ env.WINEGDK_SHA }}-${{ hashFiles('patches/**') }}-${{ github.run_id }}
           restore-keys: |
             ccache-${{ env.WINEGDK_SHA }}-
-            ccache-
 
       - name: Configure CrossOver Wine
         working-directory: src/winegdk
